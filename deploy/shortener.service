@@ -1,0 +1,31 @@
+[Unit]
+Description=URL shortener service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shortener
+Group=shortener
+WorkingDirectory=/opt/shortener
+EnvironmentFile=/etc/shortener/shortener.env
+ExecStart=/opt/shortener/shortener
+Restart=always
+RestartSec=2
+
+# Hardening: the process only needs its data directory and a socket.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/shortener/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

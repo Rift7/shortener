@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --all-features --verbose
+
+  msrv:
+    name: msrv 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build with minimum supported Rust
+        run: cargo build --locked
+
+  build:
+    name: release build
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Smoke test the binary
+        run: |
+          SHORTENER_API_KEYS=ci-smoke-key-0123456789 \
+          SHORTENER_BIND=127.0.0.1:8080 \
+          SHORTENER_PUBLIC_BASE_URL=http://127.0.0.1:8080 \
+          SHORTENER_DB=/tmp/ci.db \
+          ./target/release/shortener &
+          for _ in $(seq 20); do
+            curl -fsS http://127.0.0.1:8080/healthz && break || sleep 0.5
+          done
+          curl -fsS -X POST http://127.0.0.1:8080/api/links \
+            -H "authorization: Bearer ci-smoke-key-0123456789" \
+            -H "content-type: application/json" \
+            -d '{"url":"https://example.com","slug":"ci"}' | tee /tmp/created.json
+          grep -q '"slug":"ci"' /tmp/created.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ci)" = "302"

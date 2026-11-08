@@ -1,0 +1,8 @@
+target
+data
+.git
+.env
+*.db
+*.db-shm
+*.db-wal
+README.md

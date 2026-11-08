@@ -1,0 +1,36 @@
+services:
+  shortener:
+    build: .
+    image: shortener:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SHORTENER_BIND: 0.0.0.0:8080
+      SHORTENER_DB: /data/shortener.db
+      SHORTENER_PUBLIC_BASE_URL: https://${SHORT_DOMAIN}
+    volumes:
+      - shortener-data:/data
+    expose:
+      - "8080"
+    # Not published to the host: only Caddy reaches it, over the compose network.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - shortener
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SHORT_DOMAIN: ${SHORT_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  shortener-data:
+  caddy-data:
+  caddy-config:

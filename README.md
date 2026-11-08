@@ -156,10 +156,10 @@ curl https://go.example.com/healthz
 ./deploy/deploy.sh root@203.0.113.10 go.example.com you@example.com
 ```
 
-Builds a musl binary, installs the hardened unit from
-[`deploy/shortener.service`](deploy/shortener.service), generates an API key into
-`/etc/shortener/shortener.env` (mode `600`), configures Caddy, and prints the key.
-Re-running is safe — an existing key is reused.
+Builds the source on the server (so architecture and libc always match), installs
+the hardened unit from [`deploy/shortener.service`](deploy/shortener.service),
+generates an API key into `/etc/shortener/shortener.env` (mode `600`), configures
+Caddy, and prints the key. Re-running is safe — an existing key is reused.
 
 ### Cloudflare DNS
 

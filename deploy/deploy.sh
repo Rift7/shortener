@@ -1,82 +1,54 @@
 #!/usr/bin/env bash
-# Deploy the shortener to a VPS over SSH.
+# Deploy the shortener to a VPS from this checkout.
 #
-#   ./deploy/deploy.sh root@203.0.113.10 go.example.com
+#   ./deploy/deploy.sh root@203.0.113.10 go.example.com you@example.com
 #
-# Builds a static-ish release binary locally, copies it up with its systemd
-# unit, and installs a Caddy reverse proxy on the remote host for TLS.
+# Uploads the tracked source tree and builds it on the server, so architecture
+# and libc always match (no cross-compilation). Installs a hardened systemd
+# unit, puts Caddy in front for automatic TLS, and prints the API key.
 set -euo pipefail
 
 HOST="${1:?usage: deploy.sh user@host domain [acme-email]}"
 DOMAIN="${2:?usage: deploy.sh user@host domain [acme-email]}"
-EMAIL="${3:-admin@${DOMAIN#*.}}"
+EMAIL="${3:-postmaster@${DOMAIN#*.}}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> building release binary for linux/amd64"
-if ! command -v cargo-zigbuild >/dev/null && [ "$(uname -s)" = "Darwin" ]; then
-  echo "    (installing cross-compilation target for musl)"
-  rustup target add x86_64-unknown-linux-musl
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+if [ -f "$HOME/.ssh/id_ed25519_shortener" ]; then
+    SSH_OPTS+=(-i "$HOME/.ssh/id_ed25519_shortener")
 fi
-# Native build when the local arch matches the VPS; otherwise use musl.
-TARGET=x86_64-unknown-linux-musl
-cargo build --release --target "$TARGET"
+SSH=(ssh "${SSH_OPTS[@]}" "$HOST")
+SCP=(scp "${SSH_OPTS[@]}")
 
-echo "==> copying artifacts to $HOST"
-ssh "$HOST" "mkdir -p /opt/shortener/data /etc/shortener && id -u shortener >/dev/null 2>&1 || useradd --system --home /opt/shortener --shell /usr/sbin/nologin shortener"
-scp "target/$TARGET/release/shortener" "$HOST:/opt/shortener/shortener.new"
-scp deploy/shortener.service "$HOST:/etc/systemd/system/shortener.service"
+say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
-echo "==> writing environment file (keeps existing API key if present)"
-ssh "$HOST" "set -e
-  touch /etc/shortener/shortener.env
-  chmod 600 /etc/shortener/shortener.env
-  grep -q '^SHORTENER_API_KEYS=' /etc/shortener/shortener.env || echo \"SHORTENER_API_KEYS=\$(openssl rand -hex 24)\" >> /etc/shortener/shortener.env
-  grep -q '^SHORTENER_BIND=' /etc/shortener/shortener.env || echo 'SHORTENER_BIND=127.0.0.1:8080' >> /etc/shortener/shortener.env
-  grep -q '^SHORTENER_DB=' /etc/shortener/shortener.env || echo 'SHORTENER_DB=/opt/shortener/data/shortener.db' >> /etc/shortener/shortener.env
-  sed -i '/^SHORTENER_PUBLIC_BASE_URL=/d' /etc/shortener/shortener.env
-  echo 'SHORTENER_PUBLIC_BASE_URL=https://${DOMAIN}' >> /etc/shortener/shortener.env
-  chown shortener:shortener /opt/shortener/data
-  mv /opt/shortener/shortener.new /opt/shortener/shortener
-  chmod 755 /opt/shortener/shortener
-  systemctl daemon-reload
-  systemctl enable --now shortener
-  systemctl restart shortener
-"
+if [ -n "$(git status --porcelain)" ]; then
+    echo "error: working tree has uncommitted changes; commit or stash before deploying" >&2
+    git status --short >&2
+    exit 1
+fi
 
-echo "==> ensuring Caddy is installed and proxying $DOMAIN"
-ssh "$HOST" "set -e
-  if ! command -v caddy >/dev/null; then
-    apt-get update -qq
-    apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-    curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -qq && apt-get install -y -qq caddy
-  fi
-  cat > /etc/caddy/Caddyfile <<EOF
-${DOMAIN} {
-    encode zstd gzip
-    header {
-        Strict-Transport-Security \"max-age=31536000; includeSubDomains\"
-        X-Content-Type-Options \"nosniff\"
-        -Server
-    }
-    reverse_proxy 127.0.0.1:8080
-    log {
-        output stdout
-        format console
-    }
-}
-EOF
-  caddy validate --config /etc/caddy/Caddyfile >/dev/null
-  systemctl reload caddy 2>/dev/null || systemctl restart caddy
-"
+say "checking SSH access to $HOST"
+"${SSH[@]}" 'echo "    connected as $(whoami) on $(hostname) ($(uname -m))"'
 
-echo "==> health check"
-ssh "$HOST" "for i in \$(seq 15); do curl -fsS http://127.0.0.1:8080/healthz && break || sleep 1; done"
+BUILD_DIR="/tmp/shortener-build-$$"
+
+say "uploading source (tracked files only)"
+git archive --format=tar.gz HEAD | "${SSH[@]}" "mkdir -p '$BUILD_DIR' && tar xzf - -C '$BUILD_DIR'"
+
+say "uploading installer"
+"${SCP[@]}" deploy/remote-install.sh "$HOST:/tmp/shortener-remote-install.sh"
+
+say "installing on $HOST (builds there; the first run downloads Rust)"
+"${SSH[@]}" "sudo bash /tmp/shortener-remote-install.sh '$DOMAIN' '$EMAIL' '$BUILD_DIR' \
+    && rm -rf '$BUILD_DIR' /tmp/shortener-remote-install.sh"
+
 echo
-echo "==> API key (store this in Hermes' .env as SHORTENER_API_KEY):"
-ssh "$HOST" "grep '^SHORTENER_API_KEYS=' /etc/shortener/shortener.env | cut -d= -f2-"
+say "API key — add this to ~/.hermes/.env as SHORTENER_API_KEY:"
+"${SSH[@]}" "sudo grep '^SHORTENER_API_KEYS=' /etc/shortener/shortener.env | cut -d= -f2- | cut -d, -f1"
+
 echo
-echo "Point an A record for ${DOMAIN} at this host, then: curl https://${DOMAIN}/healthz"
+say "done. Verify from anywhere with:"
+echo "    curl https://$DOMAIN/healthz"

@@ -40,7 +40,7 @@ This one is the smallest thing that solves it:
   no OAuth dance. Custom slugs when a link will be read aloud or printed.
 - **Self-hosted.** Your links, your domain, your database file.
 - **No tracking.** It stores a slug, a target URL, and a timestamp. Nothing else.
-- **Small enough to audit.** ~1,100 lines including tests; a single 3.7 MB binary.
+- **Small enough to audit.** ~950 lines including tests; a single 3.7 MB binary.
 
 ## API
 
